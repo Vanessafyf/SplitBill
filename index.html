@@ -6,6 +6,7 @@
 <title>FineBill</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
   :root {
     --paper: #FAF6EE;
@@ -439,6 +440,27 @@
   }
   .copy-btn.copied { background: var(--green); }
 
+  .action-row { display: flex; gap: 8px; margin-top: 16px; }
+  .action-row .copy-btn { margin-top: 0; flex: 1; }
+  .download-btn {
+    flex: 1;
+    padding: 12px;
+    border-radius: 8px;
+    border: 1px solid var(--ink);
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    background: transparent;
+    color: var(--ink);
+    transition: background 0.2s, color 0.2s;
+  }
+  .download-btn.working { opacity: 0.6; cursor: default; }
+  .download-btn.done { background: var(--green); border-color: var(--green); color: var(--paper); }
+
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 </style>
@@ -545,7 +567,10 @@
     <div class="scallop-bottom"></div>
   </div>
 
-  <button class="copy-btn mono" id="copyBtn" onclick="copySummary()">📋 Salin ringkasan buat WhatsApp</button>
+  <div class="action-row">
+    <button class="copy-btn mono" id="copyBtn" onclick="copySummary()">📋 Salin buat WA</button>
+    <button class="download-btn mono" id="downloadBtn" onclick="downloadPng()">📥 Download PNG</button>
+  </div>
 </div>
 
 <script>
@@ -924,10 +949,73 @@
       btn.textContent = "✅ Tersalin!";
       btn.classList.add("copied");
       setTimeout(() => {
-        btn.textContent = "📋 Salin ringkasan buat WhatsApp";
+        btn.textContent = "📋 Salin buat WA";
         btn.classList.remove("copied");
       }, 1800);
     }).catch(() => {});
+  }
+
+  // ---------- Download PNG ----------
+  function downloadPng() {
+    const btn = document.getElementById("downloadBtn");
+    if (btn.classList.contains("working")) return;
+
+    if (typeof html2canvas === "undefined") {
+      alert("Gagal memuat komponen download. Cek koneksi internet lalu coba lagi.");
+      return;
+    }
+
+    // Simpan state expand supaya bisa dikembalikan setelah export,
+    // lalu buka semua detail per-orang biar rincian orderan ikut ke-capture.
+    const prevExpanded = { ...expanded };
+    people.forEach((p) => { expanded[p.id] = true; });
+    render();
+
+    btn.classList.add("working");
+    btn.textContent = "⏳ Menyiapkan gambar...";
+
+    // Kasih waktu browser repaint dulu sebelum di-capture.
+    requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const target = document.querySelector(".receipt-shell");
+        html2canvas(target, {
+          backgroundColor: getComputedStyle(document.body).backgroundColor,
+          scale: 2,
+          useCORS: true,
+        }).then((canvas) => {
+          canvas.toBlob((blob) => {
+            if (!blob) throw new Error("blob null");
+            const billName = (document.getElementById("billName").value || "FineBill").trim();
+            const safeName = billName.replace(/[^a-zA-Z0-9\-_ ]/g, "").replace(/\s+/g, "-") || "FineBill";
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = `${safeName}.png`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            URL.revokeObjectURL(url);
+
+            btn.classList.remove("working");
+            btn.classList.add("done");
+            btn.textContent = "✅ Tersimpan!";
+            setTimeout(() => {
+              btn.classList.remove("done");
+              btn.textContent = "📥 Download PNG";
+            }, 1800);
+          }, "image/png");
+        }).catch((err) => {
+          console.error(err);
+          btn.classList.remove("working");
+          btn.textContent = "📥 Download PNG";
+          alert("Gagal membuat gambar. Coba lagi ya.");
+        }).finally(() => {
+          // Kembalikan state expand seperti semula.
+          expanded = prevExpanded;
+          render();
+        });
+      });
+    });
   }
 
   // ---------- Utils ----------
