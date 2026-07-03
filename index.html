@@ -223,6 +223,59 @@
     cursor: pointer;
   }
 
+  .split-mode-toggle {
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    overflow: hidden;
+    margin-top: 6px;
+    margin-bottom: 6px;
+  }
+  .split-mode-toggle button {
+    border: none;
+    background: transparent;
+    color: var(--ink-muted);
+    font-size: 10px;
+    padding: 3px 8px;
+    cursor: pointer;
+  }
+  .split-mode-toggle button.active {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .qty-alloc-list { margin-top: 4px; }
+  .qty-alloc-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .qty-alloc-name {
+    flex: 1;
+    font-size: 12px;
+  }
+  .qty-alloc-input {
+    width: 48px;
+    text-align: center;
+    border: none;
+    border-bottom: 1px solid var(--line);
+    background: transparent;
+    outline: none;
+    font-size: 13px;
+    color: var(--ink);
+    padding: 2px 0;
+  }
+  .qty-alloc-cost {
+    width: 76px;
+    text-align: right;
+    font-size: 11px;
+    color: var(--ink-muted);
+  }
+  .qty-alloc-summary {
+    font-size: 10px;
+    margin-top: 2px;
+  }
+
   /* Tax / service */
   .two-col { display: flex; gap: 16px; margin-bottom: 12px; }
   .two-col > div { flex: 1; }
@@ -499,6 +552,16 @@
   const PALETTE = ["#D14829", "#4C7A5D", "#3B6B99", "#B08A2E", "#8A5FA8", "#C15E8A"];
   const uid = () => Math.random().toString(36).slice(2, 9);
   const formatRp = (n) => "Rp" + Math.round(n).toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+  // Hanya izinkan digit dan satu titik desimal (input ini sekarang type="text"
+  // supaya cursor-restore di render() bisa berfungsi, jadi validasi manual di sini).
+  function sanitizeNumberInput(value) {
+    let cleaned = value.replace(/[^0-9.]/g, "");
+    const firstDot = cleaned.indexOf(".");
+    if (firstDot !== -1) {
+      cleaned = cleaned.slice(0, firstDot + 1) + cleaned.slice(firstDot + 1).replace(/\./g, "");
+    }
+    return cleaned;
+  }
 
   let people = [
     { id: uid(), name: "Kamu" },
@@ -530,7 +593,10 @@
   }
   function removePerson(id) {
     people = people.filter((p) => p.id !== id);
-    items.forEach((i) => (i.sharedBy = i.sharedBy.filter((s) => s !== id)));
+    items.forEach((i) => {
+      i.sharedBy = i.sharedBy.filter((s) => s !== id);
+      if (i.customQty) delete i.customQty[id];
+    });
     delete expanded[id];
     render();
   }
@@ -540,7 +606,7 @@
 
   // ---------- Items ----------
   function addItem() {
-    items.push({ id: uid(), name: "", unitPrice: "", qty: 1, sharedBy: people.map((p) => p.id) });
+    items.push({ id: uid(), name: "", unitPrice: "", qty: 1, sharedBy: people.map((p) => p.id), splitMode: "equal", customQty: {} });
     render();
   }
   function removeItem(id) {
@@ -549,7 +615,10 @@
   }
   function updateItem(id, field, value) {
     const item = items.find((i) => i.id === id);
-    if (item) item[field] = value;
+    if (item) {
+      if (field === "unitPrice" || field === "qty") value = sanitizeNumberInput(value);
+      item[field] = value;
+    }
     render();
   }
   function toggleShare(itemId, personId) {
@@ -560,6 +629,20 @@
     } else {
       item.sharedBy.push(personId);
     }
+    render();
+  }
+  function setItemSplitMode(itemId, mode) {
+    const item = items.find((i) => i.id === itemId);
+    if (!item) return;
+    item.splitMode = mode;
+    if (mode === "qty" && !item.customQty) item.customQty = {};
+    render();
+  }
+  function updateItemQtyAlloc(itemId, personId, value) {
+    const item = items.find((i) => i.id === itemId);
+    if (!item) return;
+    if (!item.customQty) item.customQty = {};
+    item.customQty[personId] = sanitizeNumberInput(value);
     render();
   }
 
@@ -574,7 +657,10 @@
   }
   function updateOtherCost(id, field, value) {
     const o = otherCosts.find((o) => o.id === id);
-    if (o) o[field] = value;
+    if (o) {
+      if (field === "amount") value = sanitizeNumberInput(value);
+      o[field] = value;
+    }
     render();
   }
 
@@ -602,6 +688,19 @@
       const qty = parseFloat(item.qty) || 0;
       const lineTotal = unitPrice * qty;
       subtotal += lineTotal;
+
+      if (item.splitMode === "qty") {
+        const cq = item.customQty || {};
+        people.forEach((p) => {
+          const allocQty = parseFloat(cq[p.id]) || 0;
+          if (allocQty <= 0) return;
+          const share = allocQty * unitPrice;
+          perPerson[p.id] += share;
+          detail[p.id].items.push({ name: item.name || "Item tanpa nama", allocQty, share });
+        });
+        return;
+      }
+
       const n = item.sharedBy.length;
       if (n === 0) return;
       const share = lineTotal / n;
@@ -641,6 +740,18 @@
 
   // ---------- Render ----------
   function render() {
+    // Simpan elemen yang sedang fokus (beserta posisi cursor) SEBELUM DOM
+    // di-rebuild lewat innerHTML. Tanpa ini, input yang sedang diketik akan
+    // hancur dan dibuat ulang setiap keystroke -> fokus hilang -> di mobile
+    // kelihatannya cuma bisa ngetik satu huruf per tap.
+    const activeEl = document.activeElement;
+    let focusKey = null, selStart = null, selEnd = null;
+    if (activeEl && activeEl.dataset && activeEl.dataset.key) {
+      focusKey = activeEl.dataset.key;
+      selStart = activeEl.selectionStart;
+      selEnd = activeEl.selectionEnd;
+    }
+
     // Chips
     const chips = document.getElementById("chips");
     chips.innerHTML = people.map((p) => `
@@ -667,22 +778,41 @@
     } else {
       itemsList.innerHTML = items.map((item) => {
         const lineTotal = (parseFloat(item.unitPrice) || 0) * (parseFloat(item.qty) || 0);
+        const unitPrice = parseFloat(item.unitPrice) || 0;
+        const splitMode = item.splitMode || "equal";
         const shareChips = people.map((p) => {
           const active = item.sharedBy.includes(p.id);
           return `<button class="share-chip mono" style="${active ? `background:${colorFor(p.id)}22;color:${colorFor(p.id)};border-color:${colorFor(p.id)}55;` : ""}" onclick="toggleShare('${item.id}','${p.id}')">${escapeHtml(p.name)}</button>`;
         }).join("");
+
+        const cq = item.customQty || {};
+        const allocatedQty = people.reduce((sum, p) => sum + (parseFloat(cq[p.id]) || 0), 0);
+        const targetQty = parseFloat(item.qty) || 0;
+        const allocMatches = Math.abs(allocatedQty - targetQty) < 0.0001;
+        const qtyRows = people.map((p) => {
+          const val = cq[p.id] !== undefined ? cq[p.id] : "";
+          const cost = (parseFloat(val) || 0) * unitPrice;
+          return `
+            <div class="qty-alloc-row">
+              <span class="qty-alloc-name mono" style="color:${colorFor(p.id)};">${escapeHtml(p.name)}</span>
+              <input class="mono qty-alloc-input" type="text" inputmode="decimal" data-key="item-alloc-${item.id}-${p.id}" placeholder="0" value="${val}" oninput="updateItemQtyAlloc('${item.id}','${p.id}',this.value)" />
+              <span class="qty-alloc-cost mono">${cost > 0 ? formatRp(cost) : ""}</span>
+            </div>
+          `;
+        }).join("");
+
         return `
           <div class="item-card">
-            <input class="item-name" type="text" placeholder="Nama item" value="${escapeAttr(item.name)}" oninput="updateItem('${item.id}','name',this.value)" />
+            <input class="item-name" type="text" data-key="item-name-${item.id}" placeholder="Nama item" value="${escapeAttr(item.name)}" oninput="updateItem('${item.id}','name',this.value)" />
             <div class="item-row">
               <div class="item-field">
                 <label class="mono">harga satuan</label>
-                <input class="mono" type="number" placeholder="0" value="${item.unitPrice}" oninput="updateItem('${item.id}','unitPrice',this.value)" />
+                <input class="mono" type="text" inputmode="decimal" data-key="item-price-${item.id}" placeholder="0" value="${item.unitPrice}" oninput="updateItem('${item.id}','unitPrice',this.value)" />
               </div>
               <div class="item-sep mono">×</div>
               <div class="item-field qty">
                 <label class="mono">qty</label>
-                <input class="mono" type="number" placeholder="1" value="${item.qty}" oninput="updateItem('${item.id}','qty',this.value)" />
+                <input class="mono" type="text" inputmode="decimal" data-key="item-qty-${item.id}" placeholder="1" value="${item.qty}" oninput="updateItem('${item.id}','qty',this.value)" />
               </div>
               <div class="item-sep mono">=</div>
               <div class="item-total">
@@ -691,7 +821,19 @@
               </div>
               <button class="remove-btn" onclick="removeItem('${item.id}')">✕</button>
             </div>
-            <div class="item-share-chips">${shareChips}</div>
+
+            <div class="split-mode-toggle mono">
+              <button class="${splitMode === "equal" ? "active" : ""}" onclick="setItemSplitMode('${item.id}','equal')">Bagi rata</button>
+              <button class="${splitMode === "qty" ? "active" : ""}" onclick="setItemSplitMode('${item.id}','qty')">Atur qty</button>
+            </div>
+
+            ${splitMode === "equal"
+              ? `<div class="item-share-chips">${shareChips}</div>`
+              : `<div class="qty-alloc-list">${qtyRows}</div>
+                 <div class="qty-alloc-summary mono" style="color:${allocMatches ? "var(--ink-muted)" : "var(--accent)"};">
+                   Dialokasikan: ${allocatedQty} / ${targetQty || 0} pcs${allocMatches ? "" : " — belum pas"}
+                 </div>`
+            }
           </div>
         `;
       }).join("");
@@ -702,8 +844,8 @@
     document.getElementById("otherCostsHint").style.display = otherCosts.length ? "none" : "block";
     otherList.innerHTML = otherCosts.map((o) => `
       <div class="other-row">
-        <input type="text" placeholder="Ongkir / parkir / dll" value="${escapeAttr(o.name)}" oninput="updateOtherCost('${o.id}','name',this.value)" />
-        <input class="mono" type="number" placeholder="0" value="${o.amount}" oninput="updateOtherCost('${o.id}','amount',this.value)" />
+        <input type="text" data-key="other-name-${o.id}" placeholder="Ongkir / parkir / dll" value="${escapeAttr(o.name)}" oninput="updateOtherCost('${o.id}','name',this.value)" />
+        <input class="mono" type="text" inputmode="decimal" data-key="other-amount-${o.id}" placeholder="0" value="${o.amount}" oninput="updateOtherCost('${o.id}','amount',this.value)" />
         <button class="remove-btn" onclick="removeOtherCost('${o.id}')">✕</button>
       </div>
     `).join("");
@@ -730,7 +872,7 @@
         ? `<div class="mono" style="font-size:11px;color:var(--ink-muted);">Tidak ikut pesan item apa pun.</div>`
         : d.items.map((it) => `
             <div class="detail-item-line mono">
-              <span class="lbl">${escapeHtml(it.name)}${it.splitWith > 1 ? ` (patungan ${it.splitWith} org)` : ""}</span>
+              <span class="lbl">${escapeHtml(it.name)}${it.allocQty !== undefined ? ` (${it.allocQty} pcs)` : it.splitWith > 1 ? ` (patungan ${it.splitWith} org)` : ""}</span>
               <span>${formatRp(it.share)}</span>
             </div>
           `).join("");
@@ -752,6 +894,18 @@
         </div>
       `;
     }).join("");
+
+    // Kembalikan fokus + posisi cursor ke input yang tadi sedang diketik,
+    // karena node lamanya sudah dihapus oleh innerHTML rebuild di atas.
+    if (focusKey) {
+      const elToFocus = document.querySelector(`[data-key="${focusKey}"]`);
+      if (elToFocus) {
+        elToFocus.focus();
+        if (selStart !== null && typeof elToFocus.setSelectionRange === "function") {
+          try { elToFocus.setSelectionRange(selStart, selEnd); } catch (e) {}
+        }
+      }
+    }
   }
 
   // ---------- Copy summary ----------
