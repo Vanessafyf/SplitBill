@@ -461,6 +461,48 @@
   .download-btn.working { opacity: 0.6; cursor: default; }
   .download-btn.done { background: var(--green); border-color: var(--green); color: var(--paper); }
 
+  .export-shell {
+    position: fixed;
+    top: 0;
+    left: -9999px;
+    width: 380px;
+    z-index: -1;
+  }
+  .export-header { text-align: center; margin-bottom: 4px; }
+  .export-title { font-size: 16px; font-weight: 700; }
+  .export-date { font-size: 11px; color: var(--ink-muted); margin-top: 2px; }
+  .export-person { padding: 8px 0; }
+  .export-person-name { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+  .export-item-line {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--ink);
+    margin-bottom: 4px;
+  }
+  .export-item-line .lbl { color: var(--ink-muted); }
+  .export-person-total {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    font-weight: 700;
+    padding-top: 6px;
+    margin-top: 4px;
+    border-top: 1px dashed var(--line);
+  }
+  .export-cost-breakdown {
+    margin-top: 6px;
+    padding-top: 4px;
+    border-top: 1px dashed var(--line);
+  }
+  .export-cost-line {
+    display: flex;
+    justify-content: space-between;
+    font-size: 10px;
+    color: var(--ink-muted);
+    margin-bottom: 2px;
+  }
+
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 </style>
@@ -573,6 +615,9 @@
   </div>
 </div>
 
+<!-- Kontainer off-screen khusus buat render struk ringkasan sebelum di-capture jadi PNG -->
+<div id="exportRoot" class="receipt-shell export-shell"></div>
+
 <script>
   const PALETTE = ["#D14829", "#4C7A5D", "#3B6B99", "#B08A2E", "#8A5FA8", "#C15E8A"];
   const uid = () => Math.random().toString(36).slice(2, 9);
@@ -588,6 +633,8 @@
     return cleaned;
   }
 
+  const STORAGE_KEY = "finebill_state_v1";
+
   let people = [
     { id: uid(), name: "Kamu" },
     { id: uid(), name: "Rani" },
@@ -596,7 +643,43 @@
   let otherCosts = [];
   let taxMode = "percent";
   let serviceMode = "percent";
+  let taxValue = "";
+  let serviceValue = "";
+  let billName = "SPLITIN";
   let expanded = {};
+
+  // ---------- Persistence (localStorage) ----------
+  function saveState() {
+    try {
+      const state = {
+        billName: document.getElementById("billName").value,
+        people, items, otherCosts, taxMode, serviceMode,
+        taxValue: document.getElementById("taxValue").value,
+        serviceValue: document.getElementById("serviceValue").value,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    } catch (e) {
+      // localStorage tidak tersedia (mis. private mode) - abaikan diam-diam
+    }
+  }
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return false;
+      const state = JSON.parse(raw);
+      if (state.billName !== undefined) billName = state.billName;
+      if (Array.isArray(state.people) && state.people.length) people = state.people;
+      if (Array.isArray(state.items)) items = state.items;
+      if (Array.isArray(state.otherCosts)) otherCosts = state.otherCosts;
+      if (state.taxMode) taxMode = state.taxMode;
+      if (state.serviceMode) serviceMode = state.serviceMode;
+      if (state.taxValue !== undefined) taxValue = state.taxValue;
+      if (state.serviceValue !== undefined) serviceValue = state.serviceValue;
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
 
   function colorFor(id) {
     const idx = people.findIndex((p) => p.id === id);
@@ -606,6 +689,13 @@
   document.getElementById("dateLine").textContent = new Date().toLocaleDateString("id-ID", {
     day: "numeric", month: "long", year: "numeric"
   });
+
+  // Muat data tersimpan (jika ada) sebelum render pertama.
+  loadState();
+  document.getElementById("billName").value = billName;
+  document.getElementById("taxValue").value = taxValue;
+  document.getElementById("serviceValue").value = serviceValue;
+  document.getElementById("billName").addEventListener("input", saveState);
 
   // ---------- People ----------
   function addPerson() {
@@ -631,7 +721,7 @@
 
   // ---------- Items ----------
   function addItem() {
-    items.push({ id: uid(), name: "", unitPrice: "", qty: 1, sharedBy: people.map((p) => p.id), splitMode: "equal", customQty: {} });
+    items.unshift({ id: uid(), name: "", unitPrice: "", qty: 1, sharedBy: people.map((p) => p.id), splitMode: "equal", customQty: {} });
     render();
   }
   function removeItem(id) {
@@ -931,6 +1021,8 @@
         }
       }
     }
+
+    saveState();
   }
 
   // ---------- Copy summary ----------
@@ -956,6 +1048,57 @@
   }
 
   // ---------- Download PNG ----------
+  function buildExportMarkup(totals) {
+    const name = document.getElementById("billName").value || "SPLITIN";
+    const dateStr = document.getElementById("dateLine").textContent;
+
+    const personBlocks = people.map((p) => {
+      const d = totals.detail[p.id] || { items: [] };
+      const itemsHtml = d.items.length === 0
+        ? `<div class="export-item-line mono" style="color:var(--ink-muted);">Tidak pesan apa pun</div>`
+        : d.items.map((it) => `
+            <div class="export-item-line mono">
+              <span class="lbl">${escapeHtml(it.name)}${it.allocQty !== undefined ? ` (${it.allocQty} pcs)` : it.splitWith > 1 ? ` (patungan ${it.splitWith} org)` : ""}</span>
+              <span>${formatRp(it.share)}</span>
+            </div>
+          `).join("");
+      const costLines = `
+        <div class="export-cost-line mono"><span>Subtotal item</span><span>${formatRp(d.itemsSubtotal || 0)}</span></div>
+        ${d.taxShare > 0 ? `<div class="export-cost-line mono"><span>Bagian pajak</span><span>${formatRp(d.taxShare)}</span></div>` : ""}
+        ${d.serviceShare > 0 ? `<div class="export-cost-line mono"><span>Bagian service</span><span>${formatRp(d.serviceShare)}</span></div>` : ""}
+        ${d.otherShare > 0 ? `<div class="export-cost-line mono"><span>Bagian biaya lain</span><span>${formatRp(d.otherShare)}</span></div>` : ""}
+      `;
+      return `
+        <div class="export-person">
+          <div class="export-person-name mono" style="color:${colorFor(p.id)};">${escapeHtml(p.name)}</div>
+          <div class="export-person-items">${itemsHtml}</div>
+          <div class="export-cost-breakdown">${costLines}</div>
+          <div class="export-person-total mono"><span>Total</span><span>${formatRp(totals.perPerson[p.id] || 0)}</span></div>
+        </div>
+      `;
+    }).join(`<hr class="divider" />`);
+
+    return `
+      <div class="scallop-top"></div>
+      <div class="receipt">
+        <div class="export-header mono">
+          <div class="export-title">${escapeHtml(name)}</div>
+          <div class="export-date">${escapeHtml(dateStr)}</div>
+        </div>
+        <hr class="divider" />
+        ${personBlocks}
+        <hr class="divider" />
+        <div class="summary-line mono"><span>Subtotal</span><span>${formatRp(totals.subtotal)}</span></div>
+        ${totals.taxAmt > 0 ? `<div class="summary-line mono"><span>Pajak</span><span>${formatRp(totals.taxAmt)}</span></div>` : ""}
+        ${totals.serviceAmt > 0 ? `<div class="summary-line mono"><span>Service</span><span>${formatRp(totals.serviceAmt)}</span></div>` : ""}
+        ${totals.otherTotal > 0 ? `<div class="summary-line mono"><span>Biaya lainnya</span><span>${formatRp(totals.otherTotal)}</span></div>` : ""}
+        <div class="summary-total mono"><span>Total</span><span>${formatRp(totals.grandTotal)}</span></div>
+        <div class="footer-note mono">*** terima kasih sudah patungan ***</div>
+      </div>
+      <div class="scallop-bottom"></div>
+    `;
+  }
+
   function downloadPng() {
     const btn = document.getElementById("downloadBtn");
     if (btn.classList.contains("working")) return;
@@ -965,28 +1108,25 @@
       return;
     }
 
-    // Simpan state expand supaya bisa dikembalikan setelah export,
-    // lalu buka semua detail per-orang biar rincian orderan ikut ke-capture.
-    const prevExpanded = { ...expanded };
-    people.forEach((p) => { expanded[p.id] = true; });
-    render();
+    const totals = calculate();
+    const exportRoot = document.getElementById("exportRoot");
+    exportRoot.innerHTML = buildExportMarkup(totals);
 
     btn.classList.add("working");
     btn.textContent = "⏳ Menyiapkan gambar...";
 
-    // Kasih waktu browser repaint dulu sebelum di-capture.
+    // Kasih waktu browser layout & repaint dulu sebelum di-capture.
     requestAnimationFrame(() => {
       requestAnimationFrame(() => {
-        const target = document.querySelector(".receipt-shell");
-        html2canvas(target, {
+        html2canvas(exportRoot, {
           backgroundColor: getComputedStyle(document.body).backgroundColor,
           scale: 2,
           useCORS: true,
         }).then((canvas) => {
           canvas.toBlob((blob) => {
             if (!blob) throw new Error("blob null");
-            const billName = (document.getElementById("billName").value || "FineBill").trim();
-            const safeName = billName.replace(/[^a-zA-Z0-9\-_ ]/g, "").replace(/\s+/g, "-") || "FineBill";
+            const name = (document.getElementById("billName").value || "FineBill").trim();
+            const safeName = name.replace(/[^a-zA-Z0-9\-_ ]/g, "").replace(/\s+/g, "-") || "FineBill";
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;
@@ -1010,9 +1150,7 @@
           btn.textContent = "📥 Download PNG";
           alert("Gagal membuat gambar. Coba lagi ya.");
         }).finally(() => {
-          // Kembalikan state expand seperti semula.
-          expanded = prevExpanded;
-          render();
+          exportRoot.innerHTML = "";
         });
       });
     });
