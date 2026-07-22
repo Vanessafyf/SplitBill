@@ -359,6 +359,7 @@
     color: var(--ink-muted);
     margin-bottom: 4px;
   }
+  .summary-line.discount-line { color: var(--green); }
   .summary-total {
     display: flex;
     justify-content: space-between;
@@ -411,6 +412,41 @@
     border-top: 1px dashed var(--line);
   }
   .detail-costs .summary-line { font-size: 11px; margin-bottom: 3px; }
+
+  .reset-btn {
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    cursor: pointer;
+    color: var(--ink-muted);
+    width: 26px;
+    height: 26px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-left: 8px;
+    padding: 0;
+    transition: color 0.15s, border-color 0.15s, background 0.15s, transform 0.15s;
+  }
+  .reset-btn svg { width: 14px; height: 14px; display: block; }
+  .reset-btn:hover { color: var(--ink); border-color: var(--ink-muted); }
+  .reset-btn.confirming {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent)15;
+    animation: reset-pulse 1s ease-in-out infinite;
+  }
+  @keyframes reset-pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.08); }
+  }
+  .reset-hint {
+    text-align: center;
+    font-size: 10px;
+    color: var(--accent);
+    margin: -4px 0 8px;
+  }
 
   .footer-note {
     text-align: center;
@@ -502,6 +538,7 @@
     color: var(--ink-muted);
     margin-bottom: 2px;
   }
+  .export-cost-line.discount-line { color: var(--green); }
 
   input[type=number]::-webkit-inner-spin-button,
   input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
@@ -527,7 +564,14 @@
     />
 
     <div id="dateLine" class="date-line mono" style="white-space: nowrap;"></div>
+    <button id="resetBtn" class="reset-btn" onclick="handleResetClick()" title="Hapus semua data">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 12a9 9 0 1 0 3-6.7" />
+        <polyline points="3 4 3 9 8 9" />
+      </svg>
+    </button>
     </div>
+    <div id="resetHint" class="reset-hint mono" style="display:none;">Klik ikon lagi buat konfirmasi hapus semua data</div>
 
       <!-- People -->
       <div class="section">
@@ -580,6 +624,24 @@
             <input class="mono" id="serviceValue" type="number" placeholder="0" oninput="render()" />
           </div>
         </div>
+      </div>
+
+      <!-- Discount -->
+      <div class="two-col">
+        <div>
+          <div class="field-label-row">
+            <span class="mono">Diskon</span>
+            <div class="mode-toggle" id="discountModeToggle">
+              <button class="active" onclick="setMode('discount','percent')">%</button>
+              <button onclick="setMode('discount','nominal')">Rp</button>
+            </div>
+          </div>
+          <div class="value-input-row">
+            <span class="prefix mono" id="discountPrefix">%</span>
+            <input class="mono" id="discountValue" type="number" placeholder="0" oninput="render()" />
+          </div>
+        </div>
+        <div></div>
       </div>
 
       <hr class="divider" />
@@ -644,8 +706,10 @@
   let otherCosts = [];
   let taxMode = "percent";
   let serviceMode = "percent";
+  let discountMode = "percent";
   let taxValue = "";
   let serviceValue = "";
+  let discountValue = "";
   let billName = "SPLITIN";
   let expanded = {};
 
@@ -654,9 +718,10 @@
     try {
       const state = {
         billName: document.getElementById("billName").value,
-        people, items, otherCosts, taxMode, serviceMode,
+        people, items, otherCosts, taxMode, serviceMode, discountMode,
         taxValue: document.getElementById("taxValue").value,
         serviceValue: document.getElementById("serviceValue").value,
+        discountValue: document.getElementById("discountValue").value,
       };
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
     } catch (e) {
@@ -674,12 +739,71 @@
       if (Array.isArray(state.otherCosts)) otherCosts = state.otherCosts;
       if (state.taxMode) taxMode = state.taxMode;
       if (state.serviceMode) serviceMode = state.serviceMode;
+      if (state.discountMode) discountMode = state.discountMode;
       if (state.taxValue !== undefined) taxValue = state.taxValue;
       if (state.serviceValue !== undefined) serviceValue = state.serviceValue;
+      if (state.discountValue !== undefined) discountValue = state.discountValue;
       return true;
     } catch (e) {
       return false;
     }
+  }
+
+  // ---------- Reset ----------
+  // Catatan: sengaja TIDAK pakai confirm()/alert() bawaan browser, karena
+  // dialog native itu sering diblokir kalau halaman ini dijalankan di dalam
+  // iframe/sandbox (mis. preview artifact) -> tombolnya kelihatan "gabisa
+  // dipencet" padahal sebenarnya cuma dialognya yang ke-block. Jadi dibikin
+  // konfirmasi 2 langkah langsung di UI: klik sekali -> tombol jadi merah +
+  // muncul hint, klik lagi dalam 3 detik -> baru benar-benar reset.
+  let resetConfirming = false;
+  let resetTimer = null;
+
+  function handleResetClick() {
+    if (!resetConfirming) {
+      resetConfirming = true;
+      updateResetBtnUI();
+      resetTimer = setTimeout(() => {
+        resetConfirming = false;
+        updateResetBtnUI();
+      }, 3000);
+      return;
+    }
+    clearTimeout(resetTimer);
+    resetConfirming = false;
+    resetAll();
+  }
+
+  function updateResetBtnUI() {
+    const btn = document.getElementById("resetBtn");
+    const hint = document.getElementById("resetHint");
+    if (!btn || !hint) return;
+    btn.classList.toggle("confirming", resetConfirming);
+    hint.style.display = resetConfirming ? "block" : "none";
+    btn.title = resetConfirming ? "Klik sekali lagi untuk hapus semua data" : "Hapus semua data";
+  }
+
+  function resetAll() {
+    people = [
+      { id: uid(), name: "Kamu" },
+      { id: uid(), name: "Rani" },
+    ];
+    items = [];
+    otherCosts = [];
+    taxMode = "percent";
+    serviceMode = "percent";
+    discountMode = "percent";
+    expanded = {};
+
+    document.getElementById("billName").value = "SPLITIN";
+    document.getElementById("taxValue").value = "";
+    document.getElementById("serviceValue").value = "";
+    document.getElementById("discountValue").value = "";
+
+    try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+
+    updateResetBtnUI();
+    render();
   }
 
   function colorFor(id) {
@@ -696,6 +820,7 @@
   document.getElementById("billName").value = billName;
   document.getElementById("taxValue").value = taxValue;
   document.getElementById("serviceValue").value = serviceValue;
+  document.getElementById("discountValue").value = discountValue;
   document.getElementById("billName").addEventListener("input", saveState);
 
   // ---------- People ----------
@@ -780,9 +905,11 @@
     render();
   }
 
-  // ---------- Tax / service mode ----------
+  // ---------- Tax / service / discount mode ----------
   function setMode(which, mode) {
-    if (which === "tax") taxMode = mode; else serviceMode = mode;
+    if (which === "tax") taxMode = mode;
+    else if (which === "service") serviceMode = mode;
+    else if (which === "discount") discountMode = mode;
     render();
   }
 
@@ -829,12 +956,17 @@
 
     const taxValue = parseFloat(document.getElementById("taxValue").value) || 0;
     const serviceValue = parseFloat(document.getElementById("serviceValue").value) || 0;
+    const discountValue = parseFloat(document.getElementById("discountValue").value) || 0;
 
     const taxAmt = taxMode === "percent" ? (subtotal * taxValue) / 100 : taxValue;
     const serviceAmt = serviceMode === "percent" ? (subtotal * serviceValue) / 100 : serviceValue;
+    let discountAmt = discountMode === "percent" ? (subtotal * discountValue) / 100 : discountValue;
+    // Jangan sampai diskon melebihi subtotal (biar total nggak minus).
+    if (discountAmt > subtotal) discountAmt = subtotal;
+    if (discountAmt < 0) discountAmt = 0;
 
     const otherTotal = otherCosts.reduce((sum, o) => sum + (parseFloat(o.amount) || 0), 0);
-    const grandTotal = subtotal + taxAmt + serviceAmt + otherTotal;
+    const grandTotal = subtotal + taxAmt + serviceAmt + otherTotal - discountAmt;
 
     const peopleCount = people.length;
     const otherPerHead = peopleCount > 0 ? otherTotal / peopleCount : 0;
@@ -844,14 +976,16 @@
       const ratio = subtotal > 0 ? base / subtotal : 0;
       const taxShare = ratio * taxAmt;
       const serviceShare = ratio * serviceAmt;
-      perPerson[p.id] = base + taxShare + serviceShare + otherPerHead;
+      const discountShare = ratio * discountAmt;
+      perPerson[p.id] = base + taxShare + serviceShare + otherPerHead - discountShare;
       detail[p.id].itemsSubtotal = base;
       detail[p.id].taxShare = taxShare;
       detail[p.id].serviceShare = serviceShare;
       detail[p.id].otherShare = otherPerHead;
+      detail[p.id].discountShare = discountShare;
     });
 
-    return { perPerson, detail, subtotal, taxAmt, serviceAmt, otherTotal, grandTotal };
+    return { perPerson, detail, subtotal, taxAmt, serviceAmt, otherTotal, discountAmt, grandTotal };
   }
 
   // ---------- Render ----------
@@ -884,8 +1018,12 @@
     document.getElementById("serviceModeToggle").querySelectorAll("button").forEach((b, i) => {
       b.classList.toggle("active", (i === 0 && serviceMode === "percent") || (i === 1 && serviceMode === "nominal"));
     });
+    document.getElementById("discountModeToggle").querySelectorAll("button").forEach((b, i) => {
+      b.classList.toggle("active", (i === 0 && discountMode === "percent") || (i === 1 && discountMode === "nominal"));
+    });
     document.getElementById("taxPrefix").textContent = taxMode === "percent" ? "%" : "Rp";
     document.getElementById("servicePrefix").textContent = serviceMode === "percent" ? "%" : "Rp";
+    document.getElementById("discountPrefix").textContent = discountMode === "percent" ? "%" : "Rp";
 
     // Items
     const itemsList = document.getElementById("itemsList");
@@ -976,6 +1114,7 @@
       ${totals.taxAmt > 0 ? `<div class="summary-line mono"><span>Pajak</span><span>${formatRp(totals.taxAmt)}</span></div>` : ""}
       ${totals.serviceAmt > 0 ? `<div class="summary-line mono"><span>Service</span><span>${formatRp(totals.serviceAmt)}</span></div>` : ""}
       ${totals.otherTotal > 0 ? `<div class="summary-line mono"><span>Biaya lainnya</span><span>${formatRp(totals.otherTotal)}</span></div>` : ""}
+      ${totals.discountAmt > 0 ? `<div class="summary-line discount-line mono"><span>Diskon</span><span>-${formatRp(totals.discountAmt)}</span></div>` : ""}
       <div class="summary-total mono"><span>Total</span><span>${formatRp(totals.grandTotal)}</span></div>
     `;
 
@@ -1005,6 +1144,7 @@
               ${d.taxShare > 0 ? `<div class="summary-line"><span>Bagian pajak</span><span>${formatRp(d.taxShare)}</span></div>` : ""}
               ${d.serviceShare > 0 ? `<div class="summary-line"><span>Bagian service</span><span>${formatRp(d.serviceShare)}</span></div>` : ""}
               ${d.otherShare > 0 ? `<div class="summary-line"><span>Bagian biaya lain</span><span>${formatRp(d.otherShare)}</span></div>` : ""}
+              ${d.discountShare > 0 ? `<div class="summary-line discount-line"><span>Bagian diskon</span><span>-${formatRp(d.discountShare)}</span></div>` : ""}
             </div>
           </div>
         </div>
@@ -1068,6 +1208,7 @@
         ${d.taxShare > 0 ? `<div class="export-cost-line mono"><span>Bagian pajak</span><span>${formatRp(d.taxShare)}</span></div>` : ""}
         ${d.serviceShare > 0 ? `<div class="export-cost-line mono"><span>Bagian service</span><span>${formatRp(d.serviceShare)}</span></div>` : ""}
         ${d.otherShare > 0 ? `<div class="export-cost-line mono"><span>Bagian biaya lain</span><span>${formatRp(d.otherShare)}</span></div>` : ""}
+        ${d.discountShare > 0 ? `<div class="export-cost-line discount-line mono"><span>Bagian diskon</span><span>-${formatRp(d.discountShare)}</span></div>` : ""}
       `;
       return `
         <div class="export-person">
@@ -1093,6 +1234,7 @@
         ${totals.taxAmt > 0 ? `<div class="summary-line mono"><span>Pajak</span><span>${formatRp(totals.taxAmt)}</span></div>` : ""}
         ${totals.serviceAmt > 0 ? `<div class="summary-line mono"><span>Service</span><span>${formatRp(totals.serviceAmt)}</span></div>` : ""}
         ${totals.otherTotal > 0 ? `<div class="summary-line mono"><span>Biaya lainnya</span><span>${formatRp(totals.otherTotal)}</span></div>` : ""}
+        ${totals.discountAmt > 0 ? `<div class="summary-line discount-line mono"><span>Diskon</span><span>-${formatRp(totals.discountAmt)}</span></div>` : ""}
         <div class="summary-total mono"><span>Total</span><span>${formatRp(totals.grandTotal)}</span></div>
         <div class="footer-note mono">*** terima kasih sudah membayar ***</div>
         <div class="footer-note mono" style="text-allign=center">Made with ❤️ by FineBill</div>
